@@ -1,0 +1,3 @@
+# One exact safetensors object per line, in model loading order.
+s3://your-bucket/path/to/model-00001-of-00002.safetensors
+s3://your-bucket/path/to/model-00002-of-00002.safetensors

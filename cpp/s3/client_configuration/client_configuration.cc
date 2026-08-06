@@ -36,6 +36,15 @@ size_t inflight_window_bytes(size_t chunk_bytesize, double target_gbps)
 
 ClientConfiguration::ClientConfiguration()
 {
+    // AWS SDK for C++ disables system-proxy discovery by default. Keep direct S3
+    // access as the default, but allow callers to opt in to HTTP_PROXY/HTTPS_PROXY
+    // (for example, when routing cacheable HTTP requests through Hybrid Cache for S3).
+    config.allowSystemProxy = utils::getenv<bool>("RUNAI_STREAMER_S3_USE_SYSTEM_PROXY", false);
+    if (config.allowSystemProxy)
+    {
+        LOG(DEBUG) << "S3 system proxy discovery is enabled";
+    }
+
     unsigned long max_connections = utils::getenv<unsigned long>("RUNAI_STREAMER_S3_MAX_CONNECTIONS", 0);
     if (max_connections)
     {

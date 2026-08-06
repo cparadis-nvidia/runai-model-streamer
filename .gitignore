@@ -1,2 +1,3 @@
 .idea/*
 __pycache__/
+benchmarks/s3_hybrid_cache/results/

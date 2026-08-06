@@ -122,6 +122,20 @@ TEST(ParseEndpointScheme, PortWithoutHost)
     EXPECT_EQ(result.scheme.value(), Aws::Http::Scheme::HTTP);
 }
 
+TEST(ClientConfiguration, SystemProxyIsOptIn)
+{
+    utils::temp::UnsetEnv proxy_env("RUNAI_STREAMER_S3_USE_SYSTEM_PROXY");
+
+    ClientConfiguration direct;
+    EXPECT_FALSE(direct.config.allowSystemProxy);
+
+    {
+        utils::temp::Env enable_proxy("RUNAI_STREAMER_S3_USE_SYSTEM_PROXY", true);
+        ClientConfiguration proxied;
+        EXPECT_TRUE(proxied.config.allowSystemProxy);
+    }
+}
+
 namespace
 {
 

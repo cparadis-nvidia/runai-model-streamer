@@ -102,6 +102,26 @@ Boolean `0` or `1`
 
 `0`
 
+### RUNAI_STREAMER_S3_USE_SYSTEM_PROXY
+
+Controls whether the AWS SDK for C++ may discover proxy settings from the host
+environment. Enable this to route S3 traffic through `HTTP_PROXY` or
+`HTTPS_PROXY`, for example when using a transparent S3 caching proxy.
+
+> [!NOTE]
+>
+> A caching proxy that cannot inspect HTTPS traffic also requires an `http://`
+> S3 endpoint through `AWS_ENDPOINT_URL`. Keep the proxy disabled for the direct
+> S3 arm of an A/B benchmark.
+
+#### Values accepted
+
+Boolean `0` or `1`
+
+#### Default value
+
+`0`
+
 ### RUNAI_STREAMER_GCS_CREDENTIAL_FILE
 
 Specifies the path to a credential file to use for GCS authentication.
@@ -209,4 +229,3 @@ String `0` or `1`
 #### Default value
 
 `0`
-
