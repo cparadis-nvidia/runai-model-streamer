@@ -10,19 +10,18 @@ shards and times the full read, exactly like the doc's reproduction script:
         for name, tensor in streamer.get_tensors():
             continue
 
-Caching is selected purely by environment, matching the doc:
+The experiment is Direct (no cache) vs Dragonfly. The arm is selected purely by
+environment, matching the doc:
 
-  * No cache   - stream straight from S3 (default).
-  * With cache - route through the local cache proxy (S3 Hybrid Cache or Dragonfly,
-                 whichever binary is running in ``proxy_only`` mode on the proxy
-                 port). This sets, per the doc:
+  * Direct    - stream straight from S3 (default; no proxy).
+  * Dragonfly - route through the local Dragonfly proxy running in ``proxy_only``
+                mode on the proxy port. This sets, per the doc:
 
-                     AWS_ENDPOINT_URL = http://s3.<region>.amazonaws.com
-                     HTTP_PROXY / HTTPS_PROXY = http://127.0.0.1:3128
+                    AWS_ENDPOINT_URL = http://s3.<region>.amazonaws.com
+                    HTTP_PROXY / HTTPS_PROXY = http://127.0.0.1:3128
 
-    The cache type (S3 Hybrid vs Dragonfly) is not a client-side setting - it is
-    whichever proxy is listening on the proxy port. From the streamer's point of
-    view the two are identical HTTP forward proxies.
+    The proxy is a plain HTTP forward proxy from the streamer's point of view, so
+    ``--proxy``/``--endpoint`` are generic; point them at whatever proxy you run.
 
 Defaults reproduce the doc's single-replica run: Falcon-40b, 9 shards under
 ``s3://core-llm/falcon-40b``.

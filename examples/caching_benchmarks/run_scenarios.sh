@@ -8,15 +8,17 @@
 #                              page cache); only meaningful when a cache proxy is used
 #   4. 2 replicas at once    - under network measurement (RX/TX)
 #
-# All extra args pass through to model_streamer_stream.py. To benchmark WITH a cache,
-# start the proxy (see s3_proxy_config.yaml) and pass the cache env, e.g.:
+# Runs one arm of the Direct-vs-Dragonfly experiment. All extra args pass through to
+# model_streamer_stream.py. For the Dragonfly arm, start the proxy and pass its env:
 #
 #   INTERFACE=ens5 ./run_scenarios.sh \
 #       --proxy http://127.0.0.1:3128 --endpoint http://s3.us-east-1.amazonaws.com
 #
-# WITHOUT a cache, pass no cache args:
+# For the Direct arm (no cache), pass no proxy args:
 #
 #   INTERFACE=ens5 ./run_scenarios.sh
+#
+# To run both arms back to back, use run_experiment.sh.
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
