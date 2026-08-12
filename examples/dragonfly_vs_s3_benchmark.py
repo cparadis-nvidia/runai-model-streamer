@@ -8,8 +8,10 @@ compares throughput:
   * ``dragonfly`` - the streamer talks to a DragonFly proxy that fronts the same
                     S3 bucket.
 
-Both paths use the exact same Run:ai Model Streamer code path (ranged GETs issued
-by the C++ AWS CRT client); only the endpoint the streamer points at changes.
+Everything goes through the Run:ai Model Streamer SDK - listing, the range(0,0)
+primer, and the streamed reads all use the SDK's C++ client (ranged GETs via the
+AWS CRT client). Only the endpoint the streamer points at changes between the two
+modes (passed as ``S3Credentials.endpoint``).
 
 The DragonFly "range(0,0)" primer
 ---------------------------------
@@ -21,10 +23,13 @@ a mutated ``Range`` header, so the request no longer matches the signature the
 client computed -> S3 rejects it (``SignatureDoesNotMatch``) and the read fails.
 
 The fix, per Omer Dayan: issue an explicit, correctly-signed ``Range: bytes=0-0``
-GET for each object *ourselves* before the real streamed reads. DragonFly then
-learns the object metadata from a valid request and never has to forge its own
-broken probe. This priming step is ON by default for the ``dragonfly`` path and
-can be turned off with ``--no-prime`` (useful to reproduce the failure).
+GET for each object *ourselves* before the real streamed reads. Crucially this is
+done through the SDK (a 1-byte range at offset 0 -> ``bytes=0-0``), so it is the
+*same* streamer client - same connection pool and same SigV4 signing - that then
+does the real reads. DragonFly learns the object metadata from a valid request and
+never has to forge its own broken probe. This priming step is ON by default for
+the ``dragonfly`` path and can be turned off with ``--no-prime`` (to reproduce the
+failure).
 
 Usage
 -----
@@ -43,10 +48,6 @@ Usage
 Credentials are taken from the standard AWS chain (env vars, profile, IMDS, ...).
 Only the endpoint (and optionally the region) is overridden per run, so the same
 credentials are used for direct and DragonFly reads.
-
-For cold-start accuracy, listing/priming and streaming should be run against a
-DragonFly cache in the state you care about; DragonFly caching between iterations
-is expected to speed up later iterations.
 """
 
 from __future__ import annotations
@@ -58,69 +59,61 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-
-def parse_s3_uri(uri: str) -> Tuple[str, str]:
-    """Split ``s3://bucket/prefix`` into ``(bucket, prefix)``."""
-    if not uri.startswith("s3://"):
-        raise ValueError(f"expected an s3:// URI, got {uri!r}")
-    rest = uri[len("s3://"):]
-    bucket, _, prefix = rest.partition("/")
-    if not bucket:
-        raise ValueError(f"missing bucket in {uri!r}")
-    return bucket, prefix
+SAFETENSORS_PATTERN = "*.safetensors"
 
 
-def make_boto3_client(endpoint: Optional[str], region: Optional[str], path_style: bool, unsigned: bool):
-    """Build a boto3 S3 client for listing / priming.
+def _credentials(endpoint: Optional[str], region: Optional[str]):
+    """Build S3Credentials carrying only the endpoint/region override.
 
-    Kept independent of the streamer's own boto3 usage so we can point listing at
-    the origin and priming at DragonFly with full control over addressing style.
+    The access keys themselves are left unset so the C++ layer resolves them from
+    the ambient AWS credential chain - identical for direct and DragonFly.
     """
-    import boto3
-    from botocore import UNSIGNED
-    from botocore.config import Config
+    from runai_model_streamer.s3_utils.s3_utils import S3Credentials
 
-    config_kwargs = {}
-    if path_style:
-        config_kwargs["s3"] = {"addressing_style": "path"}
-    if unsigned:
-        config_kwargs["signature_version"] = UNSIGNED
-    config = Config(**config_kwargs) if config_kwargs else None
-
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        region_name=region,
-        config=config,
-    )
+    return S3Credentials(region_name=region, endpoint=endpoint)
 
 
-def list_safetensors_objects(client, bucket: str, prefix: str) -> List[Tuple[str, int]]:
-    """List every ``*.safetensors`` object under ``prefix``; returns (key, size)."""
-    paginator = client.get_paginator("list_objects_v2")
-    results: List[Tuple[str, int]] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if key.endswith(".safetensors"):
-                results.append((key, int(obj["Size"])))
-    return results
+def list_safetensors_via_sdk(
+    prefix: str, endpoint: Optional[str], region: Optional[str]
+) -> List[Tuple[str, int]]:
+    """List every ``*.safetensors`` object under ``prefix`` using the SDK.
 
-
-def prime_range_0_0(client, bucket: str, keys: List[str]) -> None:
-    """Issue an explicit, signed ``Range: bytes=0-0`` GET for each object.
-
-    Warms DragonFly's object metadata with a valid request so DragonFly never has
-    to forge its own range(0,0) probe (which would mutate the signed Range header
-    and be rejected by S3). See the module docstring for the full rationale.
+    Listing is done against the origin/direct endpoint (DragonFly may not serve
+    LIST); the object keys are identical on both paths.
     """
-    for key in keys:
-        resp = client.get_object(Bucket=bucket, Key=key, Range="bytes=0-0")
-        body = resp["Body"]
-        try:
-            body.read()
-        finally:
-            body.close()
+    from runai_model_streamer import FileStreamer
+
+    credentials = _credentials(endpoint, region)
+    with FileStreamer() as streamer:
+        # Apply the endpoint/region credentials to this streamer before listing so
+        # a custom origin endpoint is honored (set-once, streamer-scoped).
+        streamer.handle_object_store(prefix, streamer.streamer, credentials)
+        return streamer.list_files(
+            prefix, is_recursive=True, allow_patterns=[SAFETENSORS_PATTERN]
+        )
+
+
+def prime_range_0_0_via_sdk(
+    paths: List[str], endpoint: Optional[str], region: Optional[str], device: str
+) -> None:
+    """Issue an explicit ``Range: bytes=0-0`` GET per object *through the SDK*.
+
+    A 1-byte range at offset 0 becomes ``bytes=0-0`` on the wire. Running it through
+    the same streamer client that does the real reads means DragonFly caches the
+    object metadata from a correctly-signed request and never forges its own broken
+    range(0,0) probe. See the module docstring for the full rationale.
+    """
+    from runai_model_streamer import FileStreamer, FileChunks
+
+    credentials = _credentials(endpoint, region)
+    requests = [
+        FileChunks.contiguous(i, path, 0, [1]) for i, path in enumerate(paths)
+    ]
+    with FileStreamer() as streamer:
+        streamer.stream_files(requests, credentials=credentials, device=device)
+        # Drain the single 1-byte response per file so the primer completes.
+        for _path, _chunk_index, _tensor in streamer.get_chunks():
+            pass
 
 
 @dataclass
@@ -144,16 +137,15 @@ def human_bytes(n: float) -> str:
 
 
 def stream_once(paths: List[str], endpoint: Optional[str], region: Optional[str], device: str) -> RunResult:
-    """Stream all paths through the Run:ai Model Streamer and time it.
+    """Stream all paths through the Run:ai Model Streamer SDK and time it.
 
     The endpoint override is what selects direct-S3 vs DragonFly: it is passed as
     ``S3Credentials.endpoint``, which the C++ layer applies as the CRT client's
     endpointOverride. Credentials themselves come from the ambient AWS chain.
     """
     from runai_model_streamer import SafetensorsStreamer
-    from runai_model_streamer.s3_utils.s3_utils import S3Credentials
 
-    credentials = S3Credentials(region_name=region, endpoint=endpoint)
+    credentials = _credentials(endpoint, region)
 
     start = time.perf_counter()
     with SafetensorsStreamer() as streamer:
@@ -177,9 +169,6 @@ def run_mode(
     iterations: int,
     warmup: int,
     prime: bool,
-    prime_client,
-    bucket: str,
-    keys: List[str],
 ) -> List[RunResult]:
     print(f"\n=== {label} ({len(paths)} file(s), endpoint={stream_endpoint or 'default S3'}) ===")
     results: List[RunResult] = []
@@ -189,8 +178,8 @@ def run_mode(
         tag = "warmup" if is_warmup else f"iter {i - warmup + 1}/{iterations}"
 
         if prime:
-            print(f"  [{tag}] priming range(0,0) for {len(keys)} object(s) via {label} endpoint ...")
-            prime_range_0_0(prime_client, bucket, keys)
+            print(f"  [{tag}] priming range(0,0) for {len(paths)} object(s) via {label} endpoint ...")
+            prime_range_0_0_via_sdk(paths, stream_endpoint, region, device)
 
         result = stream_once(paths, stream_endpoint, region, device)
         result.label = label
@@ -208,8 +197,7 @@ def summarize(label: str, results: List[RunResult]) -> Optional[RunResult]:
         return None
     avg_elapsed = sum(r.elapsed_s for r in results) / len(results)
     bytes_streamed = results[0].bytes_streamed
-    agg = RunResult(label=label, elapsed_s=avg_elapsed, bytes_streamed=bytes_streamed)
-    return agg
+    return RunResult(label=label, elapsed_s=avg_elapsed, bytes_streamed=bytes_streamed)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -260,12 +248,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--path-style",
         action="store_true",
-        help="use path-style addressing for the boto3 list/prime client (S3-compatible endpoints)",
+        help="use path-style addressing (S3-compatible endpoints); sets RUNAI_STREAMER_S3_USE_VIRTUAL_ADDRESSING=0",
     )
     parser.add_argument(
         "--unsigned",
         action="store_true",
-        help="use anonymous/unsigned requests (public buckets)",
+        help="use anonymous/unsigned requests (public buckets); sets RUNAI_STREAMER_S3_UNSIGNED=1",
     )
     return parser
 
@@ -291,17 +279,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.path_style:
         os.environ["RUNAI_STREAMER_S3_USE_VIRTUAL_ADDRESSING"] = "0"
 
-    bucket, prefix = parse_s3_uri(args.model_path)
-
-    # List objects against the origin/direct endpoint (DragonFly may not serve LIST);
-    # the object keys are identical on both paths.
-    list_client = make_boto3_client(args.endpoint, args.region, args.path_style, args.unsigned)
-    objects = list_safetensors_objects(list_client, bucket, prefix)
+    objects = list_safetensors_via_sdk(args.model_path, args.endpoint, args.region)
     if not objects:
         print(f"error: no *.safetensors objects found under {args.model_path}", file=sys.stderr)
         return 1
-    keys = [key for key, _ in objects]
-    paths = [f"s3://{bucket}/{key}" for key in keys]
+    paths = [path for path, _ in objects]
     total_size = sum(size for _, size in objects)
     print(
         f"Found {len(objects)} safetensors object(s), {human_bytes(total_size)} total under {args.model_path}"
@@ -320,18 +302,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             iterations=args.iterations,
             warmup=args.warmup,
             prime=False,
-            prime_client=None,
-            bucket=bucket,
-            keys=keys,
         )
         agg = summarize("direct", direct_results)
         if agg:
             summaries.append(agg)
 
     if do_dragonfly:
-        prime_client = make_boto3_client(
-            args.dragonfly_endpoint, args.region, args.path_style, args.unsigned
-        )
         dragonfly_results = run_mode(
             label="dragonfly",
             stream_endpoint=args.dragonfly_endpoint,
@@ -341,9 +317,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             iterations=args.iterations,
             warmup=args.warmup,
             prime=args.prime,
-            prime_client=prime_client,
-            bucket=bucket,
-            keys=keys,
         )
         agg = summarize("dragonfly", dragonfly_results)
         if agg:
