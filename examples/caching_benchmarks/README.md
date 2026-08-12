@@ -33,6 +33,44 @@ ranges on NVMe.
 | `same_time.sh` | Run N replicas (default 2) in parallel on one node |
 | `measure_network.sh` | Wrap a command and report RX/TX from `/sys/class/net/$INTERFACE` |
 | `s3_proxy_config.yaml` | Example `proxy_only` config (see note below) |
+| `minio/minio_up.sh` | Start a local MinIO (S3-compatible) server in Docker |
+| `minio/seed_minio.py` | Generate synthetic safetensors shards and upload them to MinIO |
+
+## Quickstart with MinIO (no real S3 needed)
+
+If you don't have permissions for a real S3 bucket, run the experiment against a
+local **MinIO** server. MinIO is S3-compatible, so the streamer path is unchanged —
+you just point at the MinIO endpoint and use **path-style** addressing.
+
+```bash
+# 1. start MinIO (API :9000, console :9001, minioadmin/minioadmin)
+./minio/minio_up.sh
+
+# 2. seed synthetic shards (real safetensors; scale --shard-mib / --num-shards)
+python minio/seed_minio.py \
+    --endpoint http://127.0.0.1:9000 \
+    --bucket core-llm --prefix falcon-40b \
+    --num-shards 9 --shard-mib 256
+
+# 3a. single stream, direct (no cache)
+python model_streamer_stream.py \
+    --root s3://core-llm/falcon-40b --num-shards 9 \
+    --endpoint http://127.0.0.1:9000 --path-style \
+    --access-key minioadmin --secret-key minioadmin --region us-east-1
+
+# 3b. whole experiment, Direct vs Dragonfly (start the Dragonfly proxy first,
+#     pointing its origin at the MinIO endpoint)
+INTERFACE=lo ./run_experiment.sh \
+    --root s3://core-llm/falcon-40b --num-shards 9 \
+    --endpoint http://127.0.0.1:9000 --path-style \
+    --access-key minioadmin --secret-key minioadmin --region us-east-1
+```
+
+Notes for MinIO:
+- The seeded shards are **synthetic**, not the real Falcon-40b weights — use them to
+  exercise the Direct-vs-Dragonfly path, then scale the size toward the real model.
+- Path-style addressing is required (`--path-style`), and MinIO accepts any region.
+- For a local single-node MinIO the meaningful network interface is often `lo`.
 
 ## Running
 

@@ -146,6 +146,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default="cpu", help="destination device (default: cpu)")
     parser.add_argument(
+        "--path-style", action="store_true",
+        help="use path-style addressing (S3-compatible stores like MinIO); "
+             "sets RUNAI_STREAMER_S3_USE_VIRTUAL_ADDRESSING=0",
+    )
+    parser.add_argument("--access-key", default=None, help="access key (sets AWS_ACCESS_KEY_ID); e.g. MinIO minioadmin")
+    parser.add_argument("--secret-key", default=None, help="secret key (sets AWS_SECRET_ACCESS_KEY)")
+    parser.add_argument("--region", default=None, help="region (sets AWS_DEFAULT_REGION); MinIO accepts any, e.g. us-east-1")
+    parser.add_argument(
         "--drop-page-cache", action="store_true",
         help="drop the OS page cache before streaming (needs sudo) - the 'clean PageCache' scenario",
     )
@@ -165,6 +173,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.proxy:
         os.environ["HTTP_PROXY"] = args.proxy
         os.environ["HTTPS_PROXY"] = args.proxy
+    if args.path_style:
+        os.environ["RUNAI_STREAMER_S3_USE_VIRTUAL_ADDRESSING"] = "0"
+    if args.access_key:
+        os.environ["AWS_ACCESS_KEY_ID"] = args.access_key
+    if args.secret_key:
+        os.environ["AWS_SECRET_ACCESS_KEY"] = args.secret_key
+    if args.region:
+        os.environ["AWS_DEFAULT_REGION"] = args.region
 
     file_paths = args.files if args.files else build_file_paths(args.root, args.num_shards)
     print(f"Streaming {len(file_paths)} file(s); proxy={args.proxy or 'none'}, "
