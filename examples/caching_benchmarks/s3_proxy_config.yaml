@@ -1,0 +1,21 @@
+# S3 caching proxy config, from the caching-benchmarks doc.
+#
+# Run the proxy (S3 Hybrid Cache or Dragonfly, whichever you are benchmarking) in
+# proxy_only mode on the proxy port; the streaming script routes through it via
+# HTTP_PROXY=http://127.0.0.1:3128. Example:
+#
+#     ./target/release/s3-proxy -c s3_proxy_config.yaml
+server:
+  mode: "proxy_only"
+  proxy_port: 3128
+  max_concurrent_requests: 2000000
+cache:
+  cache_dir: "/mnt/nvmecache/test"
+  max_cache_size: 90000000000
+logging:
+  access_log_dir: "./tmp/logs/access"
+  app_log_dir: "./tmp/logs/app"
+compression:
+  enabled: false
+  threshold: 1024
+  preferred_algorithm: "lz4"
