@@ -33,6 +33,7 @@ ranges on NVMe.
 | `same_time.sh` | Run N replicas (default 2) in parallel on one node |
 | `measure_network.sh` | Wrap a command and report RX/TX from `/sys/class/net/$INTERFACE` |
 | `s3_proxy_config.yaml` | Example `proxy_only` config (see note below) |
+| `s3_resign_proxy.py` | Origin re-signer: dfdaemon rewrites SigV4 `Range` into pieces; this signs the piece GET with box creds |
 | `minio/minio_up.sh` | Start a local MinIO (S3-compatible) server in Docker |
 | `minio/seed_minio.py` | Generate synthetic safetensors shards and upload them to MinIO |
 
@@ -196,3 +197,7 @@ metadata from a valid request and never has to forge its own broken probe:
 python model_streamer_stream.py --prime-range0 \
     --proxy http://127.0.0.1:3128 --endpoint http://s3.us-east-1.amazonaws.com
 ```
+
+On dfdaemon v1.4.9 the primer is intercepted like any other ranged GET and does **not**
+prevent `SignatureDoesNotMatch`. The working origin path is `s3_resign_proxy.py`
+(dfdaemon `rules[].redirect` → `127.0.0.1:9009`, `S3_BUCKET=core-llm`).

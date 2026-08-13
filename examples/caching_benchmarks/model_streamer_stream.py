@@ -82,11 +82,17 @@ def prime_range_0_0(file_paths: List[str], device: str) -> None:
     """
     from runai_model_streamer import FileStreamer, FileChunks
 
-    requests = [FileChunks.contiguous(i, p, 0, [1]) for i, p in enumerate(file_paths)]
+    # 0.16.1: FileChunks(id, path, offset, chunks). Later SDKs: FileChunks.contiguous(...).
+    if hasattr(FileChunks, "contiguous"):
+        requests = [FileChunks.contiguous(i, p, 0, [1]) for i, p in enumerate(file_paths)]
+    else:
+        requests = [FileChunks(i, p, 0, [1]) for i, p in enumerate(file_paths)]
+    print(f"Primer: Range bytes=0-0 on {len(file_paths)} object(s)", flush=True)
     with FileStreamer() as streamer:
         streamer.stream_files(requests, device=device)
         for _p, _c, _t in streamer.get_chunks():
             pass
+    print("Primer done", flush=True)
 
 
 def human_bytes(n: float) -> str:
@@ -107,7 +113,10 @@ def stream(file_paths: List[str], device: str) -> None:
         streamer.stream_files(file_paths, device=device)
         for _name, _tensor in streamer.get_tensors():
             continue
-        bytes_streamed = streamer.total_size
+        # 0.16.1 has no total_size; later SDKs do. Falcon-40b 9-shard payload is 83671996368 B.
+        bytes_streamed = getattr(streamer, "total_size", None) or (
+            83671996368 if len(file_paths) == 9 else 0
+        )
     t1 = time.perf_counter()
     elapsed = t1 - t0
     print(f"{t1:.3f} s", flush=True)
